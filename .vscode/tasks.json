@@ -9,7 +9,9 @@
                 "-g",
                 "${file}",
                 "-o",
-                "${fileDirname}\\${fileBasenameNoExtension}.exe"
+                "${fileDirname}\\${fileBasenameNoExtension}.exe",
+                //winsock lib linking
+                "-lws2_32"
             ],
             "options": {
                 "cwd": "C:/msys64/ucrt64/bin"
