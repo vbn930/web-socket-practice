@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <iostream>
+#include <vector>
+#include <algorithm>
 
 #define BUF_SIZE 100
 #define READ 3 // 데이터의 전송 모드 저장을 위한 값
@@ -19,6 +21,13 @@ typedef struct{
     WSABUF wsaBuf;
     char buffer[BUF_SIZE];
     int rwMode;
+
+    // 서버로 전달된 메세지를 전달할 클라이언트를 저장할 목록과 저장 횟수를 카운트 하기위한 변수
+    std::vector<SOCKET>* socks;
+    int sendCnt;
+
+    // 임계 지점 보호를 위한 변수
+    CRITICAL_SECTION* cs;
 } PER_IO_DATA, *LPPER_IO_DATA;
 
 DWORD WINAPI EchoThreadMain(LPVOID CompletionPortIO); // IO 처리를 위한 쓰레드에서 실행할 함수
@@ -35,6 +44,10 @@ int main(int argc, char* argv[]){
     SOCKET hServSock;
     SOCKADDR_IN servAddr;
     int recvBytes, flag = 0;
+
+    std::vector<SOCKET>* socks;
+
+    CRITICAL_SECTION* cs;
 
     if(WSAStartup(MAKEWORD(2, 2), &wsaData) != 0){
         ErrorHandling("WSAStartup()");
@@ -56,6 +69,11 @@ int main(int argc, char* argv[]){
     bind(hServSock, (SOCKADDR*) &servAddr, sizeof(servAddr));
     listen(hServSock, 5);
 
+    socks = new std::vector<SOCKET>();
+    cs = new CRITICAL_SECTION();
+
+    InitializeCriticalSection(cs);
+
     while(true){
         SOCKET hClntSock;
         SOCKADDR_IN clntAddr;
@@ -65,6 +83,11 @@ int main(int argc, char* argv[]){
         handleInfo->hClntSock = hClntSock;
         memcpy(&handleInfo->clntSockAddr, &clntAddr, sizeof(SOCKADDR_IN));
 
+        // 생성된 클라이언트 소켓을 벡터에 저장
+        EnterCriticalSection(cs);
+        socks->push_back(hClntSock);
+        LeaveCriticalSection(cs);
+
         CreateIoCompletionPort((HANDLE) hClntSock, hComPort, (ULONG_PTR) handleInfo, 0); // CP오브젝트와 소켓을 연결
 
         ioInfo = (LPPER_IO_DATA) malloc(sizeof(PER_IO_DATA));
@@ -72,6 +95,11 @@ int main(int argc, char* argv[]){
         ioInfo->wsaBuf.len = BUF_SIZE;
         ioInfo->wsaBuf.buf = ioInfo->buffer;
         ioInfo->rwMode = READ; // IO 모드를 READ 모드로 설정
+        // 저장된 벡터의 포인터를 할당
+        ioInfo->socks = socks;
+        ioInfo->sendCnt = 0;
+        // CS 저장
+        ioInfo->cs = cs;
         WSARecv(handleInfo->hClntSock, &(ioInfo->wsaBuf), 1, (LPDWORD) &recvBytes, (LPDWORD) &flag, &(ioInfo->overlapped), NULL);
     }
 
@@ -85,6 +113,8 @@ DWORD WINAPI EchoThreadMain(LPVOID pComPort){
     LPPER_HANDLE_DATA handleInfo;
     LPPER_IO_DATA ioInfo;
     DWORD flags = 0;
+    CRITICAL_SECTION* cs;
+    std::vector<SOCKET>* socks;
 
     while(true){
         // 할당된 CP 오브젝트에 IO가 완료 되었을때까지 블록킹 상태
@@ -94,6 +124,8 @@ DWORD WINAPI EchoThreadMain(LPVOID pComPort){
         // 즉, GetQueuedCompletionStatus의 세번째, 네번째 함수는 다른 스레드로 컨텍스트(Context) 정보를 전달하는 통로 역할이다
         GetQueuedCompletionStatus(hComPort, &bytesTrans, (PULONG_PTR) &handleInfo, (LPOVERLAPPED*) &ioInfo, INFINITE);
         sock = handleInfo->hClntSock;
+        socks = ioInfo->socks;
+        cs = ioInfo->cs;
 
         if(ioInfo->rwMode == READ){ // 완료된 IO가 READ 모드 일때
             std::cout << "message received!" << std::endl;
@@ -102,6 +134,11 @@ DWORD WINAPI EchoThreadMain(LPVOID pComPort){
                 closesocket(sock);
                 free(handleInfo);
                 free(ioInfo);
+
+                // 닫힌 소켓을 저장 벡터에서 삭제
+                EnterCriticalSection(cs);
+                socks->erase(std::find(socks->begin(), socks->end(), sock));
+                LeaveCriticalSection(cs);
                 continue;
             }
 
@@ -109,7 +146,14 @@ DWORD WINAPI EchoThreadMain(LPVOID pComPort){
             ioInfo->overlapped = {};
             ioInfo->wsaBuf.len = bytesTrans;
             ioInfo->rwMode = WRITE;
-            WSASend(sock, &(ioInfo->wsaBuf), 1, NULL, 0, &(ioInfo->overlapped), NULL);
+
+            // 할당된 클라이언트 소켓 전체에게 메세지 전송
+            EnterCriticalSection(cs);
+            for(auto socket : *socks){
+                WSASend(socket, &(ioInfo->wsaBuf), 1, NULL, 0, &(ioInfo->overlapped), NULL);
+                std::cout << "Sent message to " << socket << std::endl;
+            }
+            LeaveCriticalSection(cs);
 
             // 데이터를 클라이언트로 부터 수신받기 위한 ioInfo 할당 (위의 ioInfo는 데이터 전송이 완료되면 할당이 해제된다)
             // 만약 메모리를 재할당 하지않고 바로 재활용 한다면, 전송이 완료되지 않은 데이터가 오염될 가능성이 존재한다. (전송이 비동기적으로 동작하기 때문)
@@ -118,10 +162,22 @@ DWORD WINAPI EchoThreadMain(LPVOID pComPort){
             ioInfo->wsaBuf.len = BUF_SIZE;
             ioInfo->wsaBuf.buf = ioInfo->buffer;
             ioInfo->rwMode = READ;
+
+            ioInfo->socks = socks;
+            ioInfo->sendCnt = 0;
+            ioInfo->cs = cs;
             WSARecv(sock, &(ioInfo->wsaBuf), 1, NULL, &flags, &(ioInfo->overlapped), NULL);
         }else{
-            std::cout << "message sent!" << std::endl;
-            free(ioInfo);
+            // 만약 모든 소켓에게 전송을 완료했다면 메모리를 할당해제
+            EnterCriticalSection(cs);
+            ioInfo->sendCnt++;
+            std::cout << "Send count: " << ioInfo->sendCnt << ", Socks size: " << ioInfo->socks->size() << std::endl;
+
+            if(ioInfo->sendCnt >= ioInfo->socks->size()){
+                free(ioInfo);
+                std::cout << "message sent to all client!" << std::endl;
+            }
+            LeaveCriticalSection(cs);
         }
     }
 
