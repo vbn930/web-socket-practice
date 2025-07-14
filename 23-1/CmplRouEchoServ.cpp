@@ -52,7 +52,7 @@ int main(int argc, char* argv[]){
     while(true){
         SleepEx(1000, TRUE); // alertalbe wait 상태로 만들기 위함
         // 논블록킹 리스닝 소켓으로 accept 함수를 호출해서 클라이언트 소켓을 할당하면, 클라이언트 소켓도 논블록킹 소켓이됨
-        hRecvSock = accept(hLisnSock, (SOCKADDR*) &recvAddr, &recvAddrSz); 
+        hRecvSock = accept(hLisnSock, (SOCKADDR*) &recvAddr, &recvAddrSz);
         if(hRecvSock == INVALID_SOCKET){ // 논블록킹 모드라면 할당될 클라이언트가 없을때, accept는 바로 INVALID_SOCKET을 반환한다
             if(WSAGetLastError() == WSAEWOULDBLOCK){ // 만약 에러 메세지가 WSAEWOULDBLOCK이라면, 클라이언트가 없어서 반환됐다는 의미
                 continue;
@@ -107,7 +107,7 @@ void CALLBACK WriteCompRoutine(DWORD dwError, DWORD szSendBytes, LPWSAOVERLAPPED
     DWORD recvBytes;
     int flagInfo = 0;
     
-    WSASend(hSock, bufInfo, 1, &recvBytes, (DWORD) &flagInfo, lpOverlapped, WriteCompRoutine); // 데이터를 클라이언트에게서 다시 수신
+    WSARecv(hSock, bufInfo, 1, &recvBytes, (LPDWORD) &flagInfo, lpOverlapped, WriteCompRoutine); // 데이터를 클라이언트에게서 다시 수신
 }
 
 void ErrorHandling(const char* message){
