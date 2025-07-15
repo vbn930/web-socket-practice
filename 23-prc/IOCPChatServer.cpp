@@ -1,3 +1,5 @@
+// IOCP를 활용한 간단한 채팅 서버 구현
+
 #include <stdlib.h>
 #include <process.h>
 #include <windows.h>
