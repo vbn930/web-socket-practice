@@ -75,6 +75,14 @@ public:
         AddNode(_header, data);
     }
 
+    void pop_back(){
+        RemoveNode(_header->_prev);
+    }
+
+    void pop_front(){
+        RemoveNode(_header->_next);
+    }
+
     iterator insert(const iterator& iter, const T& data){
         return iterator(AddNode(iter->_node, data));
     }
